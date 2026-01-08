@@ -1,0 +1,449 @@
+import json
+import logging
+import os
+import re
+import time
+import httpx
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from dotenv import load_dotenv
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+from googleapiclient.http import MediaFileUpload
+import os.path
+from google_auth_oauthlib.flow import InstalledAppFlow
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from notion_client import Client
+from io import BytesIO
+from docx import Document
+from docx.shared import Inches
+
+# Load environment variables from .env file
+load_dotenv()
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+BASE_DIR = Path(__file__).resolve().parent
+
+NOTION_TOKEN = os.getenv("NOTION_TOKEN", "").strip()
+DATABASE_ID = os.getenv("DATABASE_ID", "").strip()
+DRIVE_FOLDER_ID = os.getenv("DRIVE_FOLDER_ID", "").strip()
+SERVICE_ACCOUNT_FILE = os.getenv(
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    str(BASE_DIR / "notion-sync-483309-02a27dfe1d63.json"),
+)
+
+USE_STATUS_FILTER = os.getenv("USE_STATUS_FILTER", "true").lower() in ("1", "true", "yes")
+STATUS_PROPERTY = os.getenv("NOTION_STATUS_PROPERTY", "Status").strip()
+STATUS_VALUE = os.getenv("NOTION_STATUS_VALUE", "Done").strip()
+
+OVERWRITE_EXISTING = os.getenv("OVERWRITE_EXISTING", "false").lower() in ("1", "true", "yes")
+
+SYNC_STATE_PATH = BASE_DIR / "sync_state.json"
+EXPORTS_DIR = BASE_DIR / "exports"
+
+NOTION_RATE_LIMIT_DELAY = 0.4
+DEFAULT_START_TIME = "2020-01-01T00:00:00.000Z"
+
+DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive"]
+
+
+def load_last_sync_time() -> str:
+    if SYNC_STATE_PATH.exists():
+        try:
+            data = json.loads(SYNC_STATE_PATH.read_text(encoding="utf-8"))
+            last_sync_time = data.get("last_sync_time")
+            if last_sync_time:
+                return last_sync_time
+        except (json.JSONDecodeError, OSError):
+            pass
+    return DEFAULT_START_TIME
+
+
+def save_last_sync_time(iso_time: str) -> None:
+    SYNC_STATE_PATH.write_text(
+        json.dumps({"last_sync_time": iso_time}, indent=2),
+        encoding="utf-8",
+    )
+
+
+def now_utc_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def sanitize_filename(name: str, max_len: int = 120) -> str:
+    cleaned = re.sub(r"[<>:\"/\\\\|?*]", "_", name)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if not cleaned:
+        cleaned = "Untitled"
+    return cleaned[:max_len]
+
+
+def extract_rich_text(rich_text) -> str:
+    if not rich_text:
+        return ""
+    return "".join(part.get("plain_text", "") for part in rich_text)
+
+
+def build_notion_filter(last_sync_time: str) -> dict:
+    filters = []
+
+    if USE_STATUS_FILTER and STATUS_PROPERTY and STATUS_VALUE:
+        filters.append(
+            {
+                "property": STATUS_PROPERTY,
+                "status": {"equals": STATUS_VALUE},
+            }
+        )
+
+    filters.append(
+        {
+            "timestamp": "last_edited_time",
+            "last_edited_time": {"after": last_sync_time},
+        }
+    )
+
+    if len(filters) == 1:
+        return filters[0]
+
+    return {"or": filters}
+
+
+def query_all_pages(notion: Client, database_id: str, last_sync_time: str) -> List[Dict[str, Any]]:
+    """
+    Use underlying request method to fetch all pages, bypassing version compatibility issues.
+    """
+    if len(database_id) == 32:
+        database_id = (
+            f"{database_id[:8]}-{database_id[8:12]}-{database_id[12:16]}-"
+            f"{database_id[16:20]}-{database_id[20:]}"
+        )
+        logging.info(f"Formatted Database ID to UUID: {database_id}")
+
+    all_pages = []
+    has_more = True
+    next_cursor = None
+
+    # 1. Build filter (Payload)
+    # Use existing helper to respect .env settings and last_sync_time
+    notion_filter = build_notion_filter(last_sync_time)
+
+    logging.info(f"Querying database {database_id}...")
+    
+    headers = {
+        "Authorization": f"Bearer {NOTION_TOKEN}",
+        "Notion-Version": "2022-06-28",
+        "Content-Type": "application/json",
+    }
+    url = f"https://api.notion.com/v1/databases/{database_id}/query"
+
+    # 2. Loop through pages
+    while has_more:
+        body = {
+            "page_size": 100  # Fetch 100 items per request
+        }
+
+        # Only add filter if it exists
+        if notion_filter:
+            body["filter"] = notion_filter
+        if next_cursor:
+            body["start_cursor"] = next_cursor
+
+        try:
+            print(f"DEBUG BODY: {json.dumps(body, indent=2)}")
+            sys.stdout.flush()
+            # === FIX: Use httpx directly because notion-client v2.7.0 is broken ===
+            response = httpx.post(url, headers=headers, json=body, timeout=60.0)
+            response.raise_for_status()
+            data = response.json()
+            # ==========================================================
+
+        except Exception as e:
+            logging.error(f"Error querying Notion API: {e}")
+            raise e
+
+        # 3. Process results
+        results = data.get("results", [])
+        all_pages.extend(results)
+
+        # Check for next page
+        has_more = data.get("has_more", False)
+        next_cursor = data.get("next_cursor")
+
+        # Pause to avoid rate limits
+        time.sleep(0.3)
+
+    logging.info(f"Found {len(all_pages)} pages to sync.")
+    return all_pages
+
+
+def list_block_children(notion: Client, block_id: str) -> List[Dict[str, Any]]:
+    blocks = []
+    cursor = None
+
+    while True:
+        response = notion.blocks.children.list(
+            block_id=block_id,
+            start_cursor=cursor,
+            page_size=100,
+        )
+        time.sleep(NOTION_RATE_LIMIT_DELAY)
+
+        blocks.extend(response.get("results", []))
+        if not response.get("has_more"):
+            break
+        cursor = response.get("next_cursor")
+
+    return blocks
+
+
+def download_image_to_stream(url: str) -> Optional[BytesIO]:
+    try:
+        response = httpx.get(url, timeout=30.0)
+        response.raise_for_status()
+        return BytesIO(response.content)
+    except Exception as e:
+        logging.warning(f"Failed to download image: {e}")
+        return None
+
+
+def write_block_to_docx(doc: Document, block: Dict[str, Any], notion: Client, depth: int = 0) -> None:
+    block_type = block.get("type")
+    data = block.get(block_type, {})
+    indent_level = depth  # Rudimentary indentation 
+
+    # Helper to add indented text
+    def add_text_paragraph(text, style=None):
+        if not text:
+            return
+        p = doc.add_paragraph(text, style=style)
+        if indent_level > 0 and style != 'List Bullet' and style != 'List Number':
+             p.paragraph_format.left_indent = Inches(0.25 * indent_level)
+
+    if block_type == "paragraph":
+        text = extract_rich_text(data.get("rich_text"))
+        add_text_paragraph(text)
+    elif block_type == "heading_1":
+        text = extract_rich_text(data.get("rich_text"))
+        doc.add_heading(text, level=1)
+    elif block_type == "heading_2":
+        text = extract_rich_text(data.get("rich_text"))
+        doc.add_heading(text, level=2)
+    elif block_type == "heading_3":
+        text = extract_rich_text(data.get("rich_text"))
+        doc.add_heading(text, level=3)
+    elif block_type == "bulleted_list_item":
+        text = extract_rich_text(data.get("rich_text"))
+        doc.add_paragraph(text, style='List Bullet')
+    elif block_type == "numbered_list_item":
+        text = extract_rich_text(data.get("rich_text"))
+        doc.add_paragraph(text, style='List Number')
+    elif block_type == "to_do":
+        text = extract_rich_text(data.get("rich_text"))
+        checked = data.get("checked", False)
+        mark = "[x]" if checked else "[ ]"
+        add_text_paragraph(f"{mark} {text}")
+    elif block_type == "quote":
+        text = extract_rich_text(data.get("rich_text"))
+        add_text_paragraph(f"“{text}”", style='Quote')
+    elif block_type == "code":
+        text = extract_rich_text(data.get("rich_text"))
+        # language = data.get("language", "")
+        # Very simple code block representation
+        p = doc.add_paragraph(style='No Spacing')
+        runner = p.add_run(text)
+        runner.font.name = 'Courier New'
+    elif block_type == "image":
+        image_data = data.get(data.get("type", ""), {})
+        image_url = image_data.get("url", "")
+        if image_url:
+            logging.info(f"Downloading image from block {block['id']}...")
+            stream = download_image_to_stream(image_url)
+            if stream:
+                try:
+                    doc.add_picture(stream, width=Inches(5.0))
+                except Exception as e:
+                    logging.warning(f"Could not add picture to docx: {e}")
+    else:
+        text = extract_rich_text(data.get("rich_text"))
+        if text:
+             add_text_paragraph(text)
+
+    if block.get("has_children"):
+        children = list_block_children(notion, block["id"])
+        child_depth = depth + 1
+        for child in children:
+            write_block_to_docx(doc, child, notion, depth=child_depth)
+
+
+def page_to_docx(notion: Client, page: Dict[str, Any]) -> Document:
+    doc = Document()
+    doc.add_heading(get_page_title(page), 0) # Title
+    
+    blocks = list_block_children(notion, page["id"])
+    for block in blocks:
+        write_block_to_docx(doc, block, notion)
+        
+    return doc
+
+
+def page_to_markdown(notion: Client, page: Dict[str, Any]) -> str:
+    blocks = list_block_children(notion, page["id"])
+    lines = []
+    for block in blocks:
+        lines.extend(block_to_markdown(notion, block))
+    return "\n".join(lines).strip() + "\n"
+
+
+def get_page_title(page: Dict[str, Any]) -> str:
+    for prop in page.get("properties", {}).values():
+        if prop.get("type") == "title":
+            return extract_rich_text(prop.get("title"))
+    return "Untitled"
+
+
+def get_drive_service():
+    creds = None
+    
+    # 1. Try loading from Environment Variable (Best for GitHub Actions/CI)
+    env_token = os.getenv("GOOGLE_TOKEN_JSON")
+    if env_token:
+        try:
+            logging.info("Loading Google Creds from GOOGLE_TOKEN_JSON env var...")
+            info = json.loads(env_token)
+            creds = Credentials.from_authorized_user_info(info, DRIVE_SCOPES)
+        except Exception as e:
+            logging.warning(f"Failed to load token from env: {e}")
+
+    # 2. Try loading from local file
+    if not creds and os.path.exists('token.json'):
+        creds = Credentials.from_authorized_user_file('token.json', DRIVE_SCOPES)
+
+    # 3. If invalid/missing, run default flow (Interactive)
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            try:
+                creds.refresh(Request())
+            except Exception:
+                # If refresh fails, fall back to interactive
+                creds = None
+        
+        if not creds:
+            # Only run interactive flow if NOT in headless environment
+            # (Simple heuristic: if CI env var is not set, or implicit)
+            flow = InstalledAppFlow.from_client_secrets_file(
+                'client_secret.json', DRIVE_SCOPES)
+            creds = flow.run_local_server(port=0)
+            
+        # Save the new token locally for next run
+        with open('token.json', 'w') as token:
+            token.write(creds.to_json())
+            
+    return build('drive', 'v3', credentials=creds)
+
+
+def escape_drive_query_value(value: str) -> str:
+    return value.replace("'", "\\'")
+
+
+def find_drive_file(service, folder_id: str, filename: str) -> Optional[Dict[str, Any]]:
+    safe_name = escape_drive_query_value(filename)
+    safe_folder = escape_drive_query_value(folder_id)
+    query = f"name = '{safe_name}' and '{safe_folder}' in parents and trashed = false"
+    response = (
+        service.files()
+        .list(q=query, fields="files(id, name)", pageSize=1)
+        .execute()
+    )
+    files = response.get("files", [])
+    return files[0] if files else None
+
+
+def upload_to_drive(service, folder_id: str, filename: str, local_path: Path) -> str:
+    existing = find_drive_file(service, folder_id, filename)
+    # Correct MIME type for .docx
+    media = MediaFileUpload(str(local_path), mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document", resumable=True)
+
+    if existing and not OVERWRITE_EXISTING:
+        return "skipped"
+
+    if existing and OVERWRITE_EXISTING:
+        service.files().update(fileId=existing["id"], media_body=media).execute()
+        return "updated"
+
+    file_metadata = {"name": filename, "parents": [folder_id]}
+    service.files().create(body=file_metadata, media_body=media, fields="id").execute()
+    return "created"
+
+
+def ensure_required_config() -> None:
+    missing = []
+    if not NOTION_TOKEN:
+        missing.append("NOTION_TOKEN")
+    if not DATABASE_ID:
+        missing.append("DATABASE_ID")
+    if not DRIVE_FOLDER_ID:
+        missing.append("DRIVE_FOLDER_ID")
+    if not SERVICE_ACCOUNT_FILE or not Path(SERVICE_ACCOUNT_FILE).exists():
+        missing.append("GOOGLE_APPLICATION_CREDENTIALS")
+
+    if missing:
+        raise RuntimeError(f"Missing required config: {', '.join(missing)}")
+
+
+def main() -> None:
+    ensure_required_config()
+    EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    notion = Client(auth=NOTION_TOKEN)
+    drive_service = get_drive_service()
+
+    last_sync_time = load_last_sync_time()
+    pages = query_all_pages(notion, DATABASE_ID, last_sync_time)
+
+    if not pages:
+        logging.info("No pages to sync.")
+        return
+
+    failures = 0
+
+    for page in pages:
+        page_title = get_page_title(page)
+        last_edited = page.get("last_edited_time", "")
+        date_stamp = (last_edited or now_utc_iso())[:10]
+        # Changed extension to .docx
+        filename = sanitize_filename(f"{page_title}_{date_stamp}.docx")
+        local_path = EXPORTS_DIR / filename
+
+        try:
+            # Generate DOCX instead of Markdown
+            doc = page_to_docx(notion, page)
+            doc.save(local_path)
+            
+            result = upload_to_drive(drive_service, DRIVE_FOLDER_ID, filename, local_path)
+            logging.info(f"Synced ({result}): {page_title}")
+        except HttpError as exc:
+            failures += 1
+            if exc.resp.status == 403:
+                logging.error(
+                    "Failed: Ensure Service Account email is added as Editor to the Folder."
+                )
+            else:
+                logging.error(f"Failed: {page_title} ({exc})")
+        except Exception as exc:
+            failures += 1
+            logging.error(f"Failed: {page_title} ({exc})")
+
+    if failures == 0:
+        save_last_sync_time(now_utc_iso())
+    else:
+        logging.warning("Sync completed with failures; last_sync_time not updated.")
+
+
+if __name__ == "__main__":
+    main()

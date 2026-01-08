@@ -1,0 +1,27 @@
+﻿.\.venv\Scripts\python.exe : 2026-01-07 21:51:26,628 - INFO -
+ HTTP Request: POST https://api.notion.com/v1/databases/2ddec
+5f43290816484e4eb50890873b7/query "HTTP/1.1 400 Bad Request"
+所在位置 行:1 字符: 1
++ .\.venv\Scripts\python.exe notion_image_fixer.py 2>&1 | Out
+-File -Fil ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (2026-01-07     2
+1:5...00 Bad Request":String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+2026-01-07 21:51:26,630 - ERROR - [FAIL] Error determining fi
+lter type: Client error '400 Bad Request' for url 'https://ap
+i.notion.com/v1/databases/2ddec5f43290816484e4eb50890873b7/qu
+ery'
+For more information check: https://developer.mozilla.org/en-
+US/docs/Web/HTTP/Status/400
+2026-01-07 21:51:26,630 - INFO - [WARN] No filter applied (Al
+l pages will be scanned)
+2026-01-07 21:51:26,630 - INFO - Querying database 2ddec5f432
+90816484e4eb50890873b7...
+2026-01-07 21:51:28,694 - INFO - HTTP Request: POST https://a
+pi.notion.com/v1/databases/2ddec5f43290816484e4eb50890873b7/q
+uery "HTTP/1.1 400 Bad Request"
+[START] Starting Notion Image Fixer (File Upload Mode)...
+[ERROR] Failed to query database: Client error '400 Bad Request' for url 'https://api.notion.com/v1/databases/2ddec5f43290816484e4eb50890873b7/query'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/400
