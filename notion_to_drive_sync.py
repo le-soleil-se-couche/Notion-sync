@@ -40,7 +40,7 @@ SERVICE_ACCOUNT_FILE = os.getenv(
     str(BASE_DIR / "notion-sync-483309-02a27dfe1d63.json"),
 )
 
-USE_STATUS_FILTER = os.getenv("USE_STATUS_FILTER", "true").lower() in ("1", "true", "yes")
+USE_STATUS_FILTER = os.getenv("USE_STATUS_FILTER", "false").lower() in ("1", "true", "yes")
 STATUS_PROPERTY = os.getenv("NOTION_STATUS_PROPERTY", "Status").strip()
 STATUS_VALUE = os.getenv("NOTION_STATUS_VALUE", "Done").strip()
 NOTION_TOKEN_V2 = os.getenv("NOTION_TOKEN_V2", "").strip()
