@@ -37,25 +37,15 @@ jobs:
         python notion_image_fixer.py
     
     # Step 2: 同步到 Google Drive
-    - name: 创建 Google 凭据文件
-      run: |
-        echo '${{ secrets.GOOGLE_CREDENTIALS_JSON }}' > google_credentials.json
-    
     - name: 运行同步脚本
       env:
         NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
         DATABASE_ID: ${{ secrets.DATABASE_ID }}
         NOTION_TOKEN_V2: ${{ secrets.NOTION_TOKEN_V2 }}
         DRIVE_FOLDER_ID: ${{ secrets.DRIVE_FOLDER_ID }}
-        GOOGLE_APPLICATION_CREDENTIALS: ./google_credentials.json
+        GOOGLE_TOKEN_JSON: ${{ secrets.GOOGLE_TOKEN_JSON }}
       run: |
         python notion_to_drive_sync.py
-    
-    # 清理凭据文件
-    - name: 清理敏感文件
-      if: always()
-      run: |
-        rm -f google_credentials.json
     
     - name: 上传日志
       if: always()
