@@ -1,19 +1,15 @@
-name: Notion 图片自动修复
+name: Notion Full Recovery Pipeline
 
 on:
-  # 1. 定时执行：每天北京时间 02:00 (UTC 18:00)
+  # 定时执行：每天北京时间 02:00 (UTC 18:00)
   schedule:
     - cron: '0 18 * * *'
   
-  # 2. 手动触发
+  # 手动触发
   workflow_dispatch:
-  
-  # 3. (可选) 有新 push 时也触发
-  # push:
-  #   branches: [ main ]
 
 jobs:
-  fix-notion-images:
+  full-recovery:
     runs-on: ubuntu-latest
     
     steps:
@@ -31,18 +27,41 @@ jobs:
         pip install --upgrade pip
         pip install -r requirements.txt
     
+    # Step 1: 图片永久化 (修复外部链接)
     - name: 运行图片修复脚本
       env:
         NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
         DATABASE_ID: ${{ secrets.DATABASE_ID }}
+        NOTION_TOKEN_V2: ${{ secrets.NOTION_TOKEN_V2 }}
       run: |
         python notion_image_fixer.py
     
-    - name: 上传日志 (可选)
+    # Step 2: 同步到 Google Drive
+    - name: 创建 Google 凭据文件
+      run: |
+        echo '${{ secrets.GOOGLE_CREDENTIALS_JSON }}' > google_credentials.json
+    
+    - name: 运行同步脚本
+      env:
+        NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+        DATABASE_ID: ${{ secrets.DATABASE_ID }}
+        NOTION_TOKEN_V2: ${{ secrets.NOTION_TOKEN_V2 }}
+        DRIVE_FOLDER_ID: ${{ secrets.DRIVE_FOLDER_ID }}
+        GOOGLE_APPLICATION_CREDENTIALS: ./google_credentials.json
+      run: |
+        python notion_to_drive_sync.py
+    
+    # 清理凭据文件
+    - name: 清理敏感文件
+      if: always()
+      run: |
+        rm -f google_credentials.json
+    
+    - name: 上传日志
       if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: notion-image-fixer-logs
+        name: recovery-logs-${{ github.run_id }}
         path: |
           *.log
         retention-days: 7

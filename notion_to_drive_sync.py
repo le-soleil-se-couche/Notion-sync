@@ -7,7 +7,9 @@ import httpx
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+import urllib.parse
+from PIL import Image
 
 from dotenv import load_dotenv
 from google.oauth2 import service_account
@@ -41,6 +43,7 @@ SERVICE_ACCOUNT_FILE = os.getenv(
 USE_STATUS_FILTER = os.getenv("USE_STATUS_FILTER", "true").lower() in ("1", "true", "yes")
 STATUS_PROPERTY = os.getenv("NOTION_STATUS_PROPERTY", "Status").strip()
 STATUS_VALUE = os.getenv("NOTION_STATUS_VALUE", "Done").strip()
+NOTION_TOKEN_V2 = os.getenv("NOTION_TOKEN_V2", "").strip()
 
 OVERWRITE_EXISTING = os.getenv("OVERWRITE_EXISTING", "false").lower() in ("1", "true", "yes")
 
@@ -202,14 +205,68 @@ def list_block_children(notion: Client, block_id: str) -> List[Dict[str, Any]]:
     return blocks
 
 
-def download_image_to_stream(url: str) -> Optional[BytesIO]:
+def download_image_to_stream(url: str, block_id: str = None) -> Optional[BytesIO]:
+    """下载图片并返回 BytesIO (Robust Mode w/ Proxy Fallback)"""
+    
+    # === Common: Convert to PNG if needed for python-docx ===
+    def convert_to_supported_format(data_bytes: bytes) -> BytesIO:
+        try:
+            img = Image.open(BytesIO(data_bytes))
+            if img.format not in ['JPEG', 'PNG']:
+                # Convert WebP etc to PNG
+                out = BytesIO()
+                img.convert("RGB").save(out, format="PNG")
+                out.seek(0)
+                return out
+            else:
+                return BytesIO(data_bytes)
+        except Exception as e:
+            logging.warning(f"Image conversion failed: {e}")
+            return BytesIO(data_bytes) # Try original as last resort
+
+    # === Direct Download ===
     try:
-        response = httpx.get(url, timeout=30.0)
-        response.raise_for_status()
-        return BytesIO(response.content)
+        # 使用 verify=False 和 headers 模拟浏览器，防止某些防盗链 (如小红书)
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        # 小红书特殊处理
+        if "xhscdn.com" in url:
+             headers["Referer"] = "https://www.xiaohongshu.com/"
+
+        # http2=False 更稳定
+        with httpx.Client(http2=False, verify=False, headers=headers, follow_redirects=True, timeout=30.0) as client:
+            response = client.get(url)
+            if response.status_code == 200:
+                return convert_to_supported_format(response.content)
+            else:
+                logging.warning(f"Direct download failed: {response.status_code}")
     except Exception as e:
-        logging.warning(f"Failed to download image: {e}")
-        return None
+        logging.warning(f"Failed to download image (direct): {e}")
+
+    # === Fallback: Notion Proxy ===
+    if block_id and NOTION_TOKEN_V2:
+        logging.info(f"Attempting Fallback via Notion Proxy for block {block_id}...")
+        try:
+            encoded_url = urllib.parse.quote(url, safe='')
+            proxy_url = f"https://www.notion.so/image/{encoded_url}?table=block&id={block_id}&cache=v2"
+            
+            proxy_headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Cookie": f"token_v2={NOTION_TOKEN_V2}",
+                "Accept": "image/webp,image/apng,image/*,*/*;q=0.8"
+            }
+            with httpx.Client(http2=False, verify=False, follow_redirects=True, timeout=30.0) as client:
+                r = client.get(proxy_url, headers=proxy_headers)
+                if r.status_code == 200:
+                     logging.info(f"[OK] Proxy Download SUCCESS! Size: {len(r.content)}")
+                     return convert_to_supported_format(r.content)
+                else:
+                    logging.warning(f"[FAIL] Proxy Download Failed: Status {r.status_code}")
+        except Exception as e:
+            logging.error(f"[FAIL] Proxy Download Exception: {e}")
+
+    return None
 
 
 def write_block_to_docx(doc: Document, block: Dict[str, Any], notion: Client, depth: int = 0) -> None:
@@ -262,8 +319,9 @@ def write_block_to_docx(doc: Document, block: Dict[str, Any], notion: Client, de
         image_data = data.get(data.get("type", ""), {})
         image_url = image_data.get("url", "")
         if image_url:
-            logging.info(f"Downloading image from block {block['id']}...")
-            stream = download_image_to_stream(image_url)
+            logging.info(f"Processing image block {block['id']} with URL: {image_url[:50]}...")
+            stream = download_image_to_stream(image_url, block_id=block['id'])
+            
             if stream:
                 try:
                     doc.add_picture(stream, width=Inches(5.0))

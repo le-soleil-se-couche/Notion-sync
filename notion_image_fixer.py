@@ -7,16 +7,12 @@ import httpx
 from typing import Dict, Any, List, Optional, Tuple
 from io import BytesIO
 from pathlib import Path
+import urllib.parse
+from PIL import Image
 
 from dotenv import load_dotenv
+from dotenv import load_dotenv
 from notion_client import Client
-# Google Drive imports kept for backward compatibility if needed, 
-# but main logic will use Notion File Upload.
-from google.oauth2.credentials import Credentials
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseUpload
-from google_auth_oauthlib.flow import InstalledAppFlow
-from google.auth.transport.requests import Request
 
 # 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -28,6 +24,7 @@ BASE_DIR = Path(__file__).resolve().parent
 
 # 配置项
 NOTION_TOKEN = os.getenv("NOTION_TOKEN", "").strip()
+NOTION_TOKEN_V2 = os.getenv("NOTION_TOKEN_V2", "").strip()
 DATABASE_ID = os.getenv("DATABASE_ID", "").strip()
 DRIVE_FOLDER_ID = os.getenv("DRIVE_FOLDER_ID", "").strip()
 DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive"]
@@ -72,8 +69,9 @@ def send_file_upload(file_upload_id: str, filename: str, content_type: str, cont
         raise e
 
 
-def download_image_to_stream(url: str) -> Tuple[Optional[BytesIO], Optional[str]]:
+def download_image_to_stream(url: str, block_id: str = None) -> Tuple[Optional[BytesIO], Optional[str]]:
     """下载图片并返回 (BytesIO, MIME-Type)"""
+    # === Direct Download ===
     try:
         # 使用 verify=False 和 headers 模拟浏览器，防止某些防盗链 (如小红书)
         headers = {
@@ -86,12 +84,42 @@ def download_image_to_stream(url: str) -> Tuple[Optional[BytesIO], Optional[str]
         # http2=False 更稳定
         with httpx.Client(http2=False, verify=False, headers=headers, follow_redirects=True, timeout=30.0) as client:
             response = client.get(url)
-            response.raise_for_status()
-            content_type = response.headers.get("content-type", "image/jpeg")
-            return BytesIO(response.content), content_type
+            if response.status_code == 200:
+                content_type = response.headers.get("content-type", "image/jpeg")
+                return BytesIO(response.content), content_type
+            else:
+                logging.warning(f"Direct download failed: {response.status_code}")
     except Exception as e:
-        logging.warning(f"Failed to download image: {e}")
-        return None, None
+        logging.warning(f"Failed to download image (direct): {e}")
+
+    # === Fallback: Notion Proxy ===
+    if block_id and NOTION_TOKEN_V2:
+        logging.info(f"Attempting Fallback via Notion Proxy for block {block_id}...")
+        try:
+            encoded_url = urllib.parse.quote(url, safe='')
+            proxy_url = f"https://www.notion.so/image/{encoded_url}?table=block&id={block_id}&cache=v2"
+            
+            proxy_headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Cookie": f"token_v2={NOTION_TOKEN_V2}",
+                "Accept": "image/webp,image/apng,image/*,*/*;q=0.8"
+            }
+            
+            with httpx.Client(http2=False, verify=False, follow_redirects=True, timeout=30.0) as client:
+                r = client.get(proxy_url, headers=proxy_headers)
+                if r.status_code == 200:
+                     logging.info(f"[OK] Proxy Download SUCCESS! Size: {len(r.content)}")
+                     stream = BytesIO(r.content)
+                     content_type = r.headers.get("content-type", "image/jpeg")
+                     
+                     # Simple conversion check if needed (Notion uploads support webp, but just in case)
+                     return stream, content_type
+                else:
+                    logging.warning(f"[FAIL] Proxy Download Failed: Status {r.status_code}")
+        except Exception as e:
+            logging.error(f"[FAIL] Proxy Download Exception: {e}")
+
+    return None, None
 
 
 def update_notion_image_in_place(block_id: str, file_upload_id: str):
@@ -194,7 +222,7 @@ def process_block_recursively(block: Dict[str, Any], depth=0):
     
         if url_to_process:
             # 下载
-            stream, mime = download_image_to_stream(url_to_process)
+            stream, mime = download_image_to_stream(url_to_process, block_id=block_id)
             
             if stream:
                 content = stream.read()

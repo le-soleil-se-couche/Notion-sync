@@ -1,6 +1,27 @@
-*.json
-*.log
-__pycache__/
-exports/
+# 环境变量和凭据
 .env
+.env.*
+*.json
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
 .venv/
+venv/
+
+# 日志和导出
+*.log
+exports/
+
+# IDE
+.vscode/
+.idea/
+
+# 调试脚本
+debug_*.py
+verify_*.py
+analyze_*.py
+test_*.docx
+block.json
+proxy_debug.log
