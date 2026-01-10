@@ -368,19 +368,7 @@ def get_page_title(page: Dict[str, Any]) -> str:
 def get_drive_service():
     creds = None
     
-    # 1. Try Service Account (Best for GitHub Actions/CI)
-    # Check for GOOGLE_APPLICATION_CREDENTIALS file path or inline JSON
-    sa_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
-    if sa_path and os.path.exists(sa_path):
-        try:
-            logging.info(f"Loading Google Creds from service account file: {sa_path}")
-            creds = service_account.Credentials.from_service_account_file(
-                sa_path, scopes=DRIVE_SCOPES)
-            return build('drive', 'v3', credentials=creds)
-        except Exception as e:
-            logging.warning(f"Failed to load service account from file: {e}")
-    
-    # 2. Try loading from Environment Variable (OAuth token as JSON string)
+    # 1. Try loading from Environment Variable (OAuth token as JSON string - for GitHub Actions)
     env_token = os.getenv("GOOGLE_TOKEN_JSON")
     if env_token:
         try:
@@ -390,30 +378,50 @@ def get_drive_service():
         except Exception as e:
             logging.warning(f"Failed to load token from env: {e}")
 
-    # 3. Try loading from local token.json file
+    # 2. Try loading from local token.json file (Local Development)
     if not creds and os.path.exists('token.json'):
-        creds = Credentials.from_authorized_user_file('token.json', DRIVE_SCOPES)
+        try:
+            logging.info("Loading Google Creds from local token.json...")
+            creds = Credentials.from_authorized_user_file('token.json', DRIVE_SCOPES)
+        except Exception as e:
+            logging.warning(f"Failed to load token.json: {e}")
 
-    # 4. If invalid/missing, run interactive OAuth flow (local development only)
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
+    # 3. Refresh if expired
+    if creds and creds.expired and creds.refresh_token:
+        try:
+            logging.info("Refreshing expired OAuth token...")
+            creds.refresh(Request())
+        except Exception as e:
+            logging.warning(f"Token refresh failed: {e}")
+            creds = None
+
+    # 4. Fallback to Service Account (Only for Workspace/Enterprise users with quota)
+    if not creds:
+        sa_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+        if sa_path and os.path.exists(sa_path):
             try:
-                creds.refresh(Request())
-            except Exception:
-                creds = None
-        
-        if not creds:
-            # Check if client_secret.json exists before attempting OAuth
-            if not os.path.exists('client_secret.json'):
-                raise RuntimeError(
-                    "No valid Google credentials found. For GitHub Actions, set GOOGLE_APPLICATION_CREDENTIALS. "
-                    "For local development, ensure client_secret.json exists."
-                )
-            flow = InstalledAppFlow.from_client_secrets_file(
-                'client_secret.json', DRIVE_SCOPES)
-            creds = flow.run_local_server(port=0)
+                logging.info(f"Loading Google Creds from service account file: {sa_path}")
+                creds = service_account.Credentials.from_service_account_file(
+                    sa_path, scopes=DRIVE_SCOPES)
+            except Exception as e:
+                logging.warning(f"Failed to load service account: {e}")
+
+    # 5. Interactive Login (Last Resort for Local)
+    if not creds:
+        if not os.path.exists('client_secret.json'):
+             # If we are in GitHub Actions and reached here, it's a failure.
+            if os.getenv("GITHUB_ACTIONS"):
+                raise RuntimeError("No valid GOOGLE_TOKEN_JSON secret found for GitHub Actions.")
             
-        # Save the new token locally for next run
+            logging.warning("No credentials found. Please run 'setup_oauth.py' to generate token.json.")
+            return None
+
+        logging.info("No token found. Initiating interactive login...")
+        flow = InstalledAppFlow.from_client_secrets_file(
+            'client_secret.json', DRIVE_SCOPES)
+        creds = flow.run_local_server(port=0)
+        
+        # Save the new token locally
         with open('token.json', 'w') as token:
             token.write(creds.to_json())
             

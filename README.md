@@ -45,18 +45,18 @@
 2. 查看地址栏 URL 格式：`https://drive.google.com/drive/u/0/folders/1aBcDeFgHiJkLmNoPqRsTuVwXyZ`
 3. 复制 `folders/` 后面的那串字符 (即 `1aBcDeFgHiJkLmNoPqRsTuVwXyZ`)
 
-#### 5️⃣ `GOOGLE_CREDENTIALS_JSON` (Google 服务账号凭据)
-1. 访问 [Google Cloud Console](https://console.cloud.google.com/)
-2. 创建一个新项目 (或使用现有项目)
-3. 搜索并启用 **"Google Drive API"**
-4. 【方法一】点击左侧菜单栏的 **"凭证" (Credentials)** (钥匙图标) → 点击顶部 **"+ 创建凭证"** → 选择 **"服务账号"**
-   *或者*：【方法二】点击左上角汉堡菜单 (≡) → "IAM 和管理" → "服务账号" → "创建服务账号"
-5. 创建完成后，你会回到列表页。**请向下滚动**，找到底部的 **"服务账号"** 区域 (⚠️ **不是**上面的 "OAuth 2.0 客户端 ID")。
-6. **点击你刚才创建的账号邮箱链接** (例如 `notion-sync@...`) 进入详情页
-7. 在详情页面的顶部导航栏中（“详情”、“权限”字样的旁边），点击 **"密钥" (Keys)** 标签页。
-   *然后点击*：**"添加密钥"** → **"创建新密钥"** → 选择 **JSON** → 下载文件
-8. **用记事本打开下载的 JSON 文件，复制里面的全部内容** (从 `{` 开始到 `}` 结束)
-9. **重要**：复制服务账号的邮箱 (即刚才点击的那个邮箱地址)，进入你的 Google Drive 文件夹，点击右上角“共享”，将此邮箱添加为编辑者
+#### 5️⃣ `GOOGLE_TOKEN_JSON` (Google 登录凭据)
+*这是让 GitHub Actions 代表**你个人账号**上传文件的关键。*
+
+**获取步骤 (只需操作一次)：**
+
+1.  访问 [Google Cloud Console](https://console.cloud.google.com/) -> **"凭证" (Credentials)**
+2.  找到上面的 **"OAuth 2.0 客户端 ID"** (如果没有就点击 "+ 创建凭证" -> "OAuth 客户端 ID" -> 类型选 "桌面应用")
+3.  下载对应的 JSON 文件，重命名为 `client_secret.json`，放入项目根目录
+4.  在本地终端运行：`python setup_oauth.py`
+5.  按提示在浏览器登录授权
+6.  成功后本地会生成 `token.json`
+7.  **用记事本打开 `token.json`，复制里面的全部内容，粘贴到 GitHub Secrets 中作为 `GOOGLE_TOKEN_JSON`**
 
 ---
 
