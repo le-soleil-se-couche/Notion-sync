@@ -11,7 +11,7 @@ import urllib.parse
 from PIL import Image
 
 from dotenv import load_dotenv
-from dotenv import load_dotenv
+
 from notion_client import Client
 
 # 配置日志
