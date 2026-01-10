@@ -49,7 +49,8 @@
 1. 访问 [Google Cloud Console](https://console.cloud.google.com/)
 2. 创建一个新项目 (或使用现有项目)
 3. 搜索并启用 **"Google Drive API"**
-4. 导航到 `IAM & Admin` → `Service Accounts` → `Create Service Account`
+4. 【方法一】点击左侧菜单栏的 **"凭证" (Credentials)** (钥匙图标) → 点击顶部 **"+ 创建凭证"** → 选择 **"服务账号"**
+   *或者*：【方法二】点击左上角汉堡菜单 (≡) → "IAM 和管理" → "服务账号" → "创建服务账号"
 5. 填写名称，创建后，点击该账号进入详情页
 6. 点击 `Keys` 标签页 → `Add Key` → `Create new key` → 选择 **JSON** → 下载文件
 7. **用记事本打开下载的 JSON 文件，复制里面的全部内容** (从 `{` 开始到 `}` 结束)
