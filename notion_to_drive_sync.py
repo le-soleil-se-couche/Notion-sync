@@ -368,7 +368,19 @@ def get_page_title(page: Dict[str, Any]) -> str:
 def get_drive_service():
     creds = None
     
-    # 1. Try loading from Environment Variable (Best for GitHub Actions/CI)
+    # 1. Try Service Account (Best for GitHub Actions/CI)
+    # Check for GOOGLE_APPLICATION_CREDENTIALS file path or inline JSON
+    sa_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+    if sa_path and os.path.exists(sa_path):
+        try:
+            logging.info(f"Loading Google Creds from service account file: {sa_path}")
+            creds = service_account.Credentials.from_service_account_file(
+                sa_path, scopes=DRIVE_SCOPES)
+            return build('drive', 'v3', credentials=creds)
+        except Exception as e:
+            logging.warning(f"Failed to load service account from file: {e}")
+    
+    # 2. Try loading from Environment Variable (OAuth token as JSON string)
     env_token = os.getenv("GOOGLE_TOKEN_JSON")
     if env_token:
         try:
@@ -378,22 +390,25 @@ def get_drive_service():
         except Exception as e:
             logging.warning(f"Failed to load token from env: {e}")
 
-    # 2. Try loading from local file
+    # 3. Try loading from local token.json file
     if not creds and os.path.exists('token.json'):
         creds = Credentials.from_authorized_user_file('token.json', DRIVE_SCOPES)
 
-    # 3. If invalid/missing, run default flow (Interactive)
+    # 4. If invalid/missing, run interactive OAuth flow (local development only)
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             try:
                 creds.refresh(Request())
             except Exception:
-                # If refresh fails, fall back to interactive
                 creds = None
         
         if not creds:
-            # Only run interactive flow if NOT in headless environment
-            # (Simple heuristic: if CI env var is not set, or implicit)
+            # Check if client_secret.json exists before attempting OAuth
+            if not os.path.exists('client_secret.json'):
+                raise RuntimeError(
+                    "No valid Google credentials found. For GitHub Actions, set GOOGLE_APPLICATION_CREDENTIALS. "
+                    "For local development, ensure client_secret.json exists."
+                )
             flow = InstalledAppFlow.from_client_secrets_file(
                 'client_secret.json', DRIVE_SCOPES)
             creds = flow.run_local_server(port=0)
