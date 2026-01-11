@@ -470,8 +470,21 @@ def ensure_required_config() -> None:
         missing.append("DATABASE_ID")
     if not DRIVE_FOLDER_ID:
         missing.append("DRIVE_FOLDER_ID")
-    if not SERVICE_ACCOUNT_FILE or not Path(SERVICE_ACCOUNT_FILE).exists():
-        missing.append("GOOGLE_APPLICATION_CREDENTIALS")
+    # Credential check: Need at least one valid method
+    has_creds = False
+    
+    # 1. OAuth Token from Env
+    if os.getenv("GOOGLE_TOKEN_JSON"):
+        has_creds = True
+    # 2. Local OAuth Token
+    elif Path(BASE_DIR / "token.json").exists():
+        has_creds = True
+    # 3. Service Account File
+    elif SERVICE_ACCOUNT_FILE and Path(SERVICE_ACCOUNT_FILE).exists():
+        has_creds = True
+        
+    if not has_creds:
+        missing.append("GOOGLE_CREDENTIALS (GOOGLE_TOKEN_JSON env or token.json or valid GOOGLE_APPLICATION_CREDENTIALS)")
 
     if missing:
         raise RuntimeError(f"Missing required config: {', '.join(missing)}")
