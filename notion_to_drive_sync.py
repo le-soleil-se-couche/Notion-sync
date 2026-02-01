@@ -367,7 +367,8 @@ def get_page_title(page: Dict[str, Any]) -> str:
 
 def get_drive_service():
     creds = None
-    
+    token_refresh_failed = False  # Track if we had a token that failed to refresh
+
     # 1. Try loading from Environment Variable (OAuth token as JSON string - for GitHub Actions)
     env_token = os.getenv("GOOGLE_TOKEN_JSON")
     if env_token:
@@ -393,6 +394,7 @@ def get_drive_service():
             creds.refresh(Request())
         except Exception as e:
             logging.warning(f"Token refresh failed: {e}")
+            token_refresh_failed = True
             creds = None
 
     # 4. Fallback to Service Account (Only for Workspace/Enterprise users with quota)
@@ -408,11 +410,25 @@ def get_drive_service():
 
     # 5. Interactive Login (Last Resort for Local)
     if not creds:
+        if os.getenv("GITHUB_ACTIONS"):
+            # Give clear error message for GitHub Actions
+            if token_refresh_failed:
+                raise RuntimeError(
+                    "OAuth token refresh failed - your refresh token has expired or been revoked.\n\n"
+                    "To fix this:\n"
+                    "1. Run 'python setup_oauth.py' locally to generate a new token\n"
+                    "2. Copy the contents of token.json\n"
+                    "3. Update GOOGLE_TOKEN_JSON secret in GitHub repo settings\n\n"
+                    "Note: If your OAuth app is in 'Testing' mode, tokens expire after 7 days.\n"
+                    "Consider publishing your app or adding your email to the test users list."
+                )
+            else:
+                raise RuntimeError(
+                    "No valid Google credentials found for GitHub Actions.\n\n"
+                    "Please set the GOOGLE_TOKEN_JSON secret with valid OAuth token JSON."
+                )
+
         if not os.path.exists('client_secret.json'):
-             # If we are in GitHub Actions and reached here, it's a failure.
-            if os.getenv("GITHUB_ACTIONS"):
-                raise RuntimeError("No valid GOOGLE_TOKEN_JSON secret found for GitHub Actions.")
-            
             logging.warning("No credentials found. Please run 'setup_oauth.py' to generate token.json.")
             return None
 
@@ -420,11 +436,11 @@ def get_drive_service():
         flow = InstalledAppFlow.from_client_secrets_file(
             'client_secret.json', DRIVE_SCOPES)
         creds = flow.run_local_server(port=0)
-        
+
         # Save the new token locally
         with open('token.json', 'w') as token:
             token.write(creds.to_json())
-            
+
     return build('drive', 'v3', credentials=creds)
 
 

@@ -47,7 +47,7 @@ def setup_oauth():
                 return
 
         # Save the credentials for the next run
-        print("Zw💾 Saving new token.json...")
+        print("💾 Saving new token.json...")
         with open('token.json', 'w') as token:
             token.write(creds.to_json())
             
