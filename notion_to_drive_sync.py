@@ -350,14 +350,6 @@ def page_to_docx(notion: Client, page: Dict[str, Any]) -> Document:
     return doc
 
 
-def page_to_markdown(notion: Client, page: Dict[str, Any]) -> str:
-    blocks = list_block_children(notion, page["id"])
-    lines = []
-    for block in blocks:
-        lines.extend(block_to_markdown(notion, block))
-    return "\n".join(lines).strip() + "\n"
-
-
 def get_page_title(page: Dict[str, Any]) -> str:
     for prop in page.get("properties", {}).values():
         if prop.get("type") == "title":
@@ -397,7 +389,8 @@ def get_drive_service():
 
     # 4. Fallback to Service Account (Only for Workspace/Enterprise users with quota)
     if not creds:
-        sa_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+        # Use existing variable that includes default path fallback logic
+        sa_path = SERVICE_ACCOUNT_FILE
         if sa_path and os.path.exists(sa_path):
             try:
                 logging.info(f"Loading Google Creds from service account file: {sa_path}")
@@ -411,7 +404,10 @@ def get_drive_service():
         if not os.path.exists('client_secret.json'):
              # If we are in GitHub Actions and reached here, it's a failure.
             if os.getenv("GITHUB_ACTIONS"):
-                raise RuntimeError("No valid GOOGLE_TOKEN_JSON secret found for GitHub Actions.")
+                raise RuntimeError(
+                    "Google Drive Auth Failed: GOOGLE_TOKEN_JSON invalid/expired AND no valid Service Account found. "
+                    "Action Required: Regenerate GOOGLE_TOKEN_JSON using 'setup_oauth.py' or provide a valid Service Account JSON."
+                )
             
             logging.warning("No credentials found. Please run 'setup_oauth.py' to generate token.json.")
             return None
