@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
 """
-Refresh Google OAuth token and optionally update the GOOGLE_TOKEN_JSON GitHub Secret.
+刷新 Google OAuth Token，并在可选情况下把最新值写回 GitHub Secret：GOOGLE_TOKEN_JSON。
 
-Output:
-  stdout — the refreshed (or still-valid) token JSON, suitable for piping or
-            appending to $GITHUB_ENV inside a workflow step.
-  stderr — all progress / error messages.
+输出说明：
+  stdout —— 输出刷新后的（或当前仍有效的）token JSON，可直接写入
+            GitHub Actions 的 $GITHUB_ENV，或供你手动复制更新。
+  stderr —— 输出执行过程中的提示、警告和错误信息。
 
-Auto-update the GitHub Secret by providing both:
-  GH_TOKEN          — a Personal Access Token with repo / secrets:write scope
-  GITHUB_REPOSITORY — e.g. "owner/repo"  (set automatically by GitHub Actions)
+若同时提供以下环境变量，则会自动回写 GitHub Secret：
+  GH_TOKEN          —— GitHub Personal Access Token（需具备 repo 权限）
+  GITHUB_REPOSITORY —— 例如 "owner/repo"（GitHub Actions 中会自动提供）
 
-Usage examples
---------------
-# Local: just print the refreshed token
+使用示例
+--------
+# 本地执行：仅输出刷新后的 token
 GOOGLE_TOKEN_JSON="$(cat token.json)" python refresh_google_token.py
 
-# GitHub Actions step (see workflow for the full heredoc pattern):
+# GitHub Actions 中调用（完整写法见 workflow）：
 #   env:
 #     GOOGLE_TOKEN_JSON: ${{ secrets.GOOGLE_TOKEN_JSON }}
 #     GH_TOKEN: ${{ secrets.GH_PAT }}
@@ -36,57 +36,57 @@ DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive"]
 
 
 def _err(*args, **kwargs):
-    """Print to stderr."""
+    """输出到 stderr。"""
     print(*args, file=sys.stderr, **kwargs)
 
 
 def load_credentials() -> Credentials:
     env_token = os.getenv("GOOGLE_TOKEN_JSON", "").strip()
     if not env_token:
-        _err("ERROR: GOOGLE_TOKEN_JSON is not set or empty.")
-        _err("  Run setup_oauth.py locally to generate a token, then add it as a GitHub Secret.")
+        _err("错误：未设置 GOOGLE_TOKEN_JSON，或其内容为空。")
+        _err("  请先在本地运行 setup_oauth.py 生成 token，再把它更新到 GitHub Secret。")
         sys.exit(1)
     try:
         info = json.loads(env_token)
         return Credentials.from_authorized_user_info(info, DRIVE_SCOPES)
     except Exception as exc:
-        _err(f"ERROR: Failed to parse GOOGLE_TOKEN_JSON: {exc}")
+        _err(f"错误：解析 GOOGLE_TOKEN_JSON 失败：{exc}")
         sys.exit(1)
 
 
 def refresh_credentials(creds: Credentials) -> Credentials:
     if creds.valid:
-        _err("Token is still valid — no refresh needed.")
+        _err("当前 token 仍然有效，无需刷新。")
         return creds
 
     if not creds.refresh_token:
-        _err("ERROR: Token has no refresh_token and cannot be refreshed automatically.")
-        _err("  Please re-run setup_oauth.py locally and update the GOOGLE_TOKEN_JSON secret.")
+        _err("错误：当前 token 不包含 refresh_token，无法自动刷新。")
+        _err("  请在本地重新运行 setup_oauth.py，并手动更新 GOOGLE_TOKEN_JSON Secret。")
         sys.exit(1)
 
-    _err("Refreshing expired Google OAuth token ...")
+    _err("正在刷新已过期的 Google OAuth token ...")
     try:
         creds.refresh(Request())
-        _err("Token refreshed successfully.")
+        _err("Token 刷新成功。")
     except Exception as exc:
-        _err(f"ERROR: Token refresh failed: {exc}")
-        _err("  The refresh token may have been revoked.")
-        _err("  Please re-run setup_oauth.py locally and update the GOOGLE_TOKEN_JSON secret.")
+        _err(f"错误：Token 刷新失败：{exc}")
+        _err("  refresh token 可能已经失效或被撤销。")
+        _err("  请在本地重新运行 setup_oauth.py，并手动更新 GOOGLE_TOKEN_JSON Secret。")
         sys.exit(1)
 
     return creds
 
 
 def update_github_secret(token_json: str) -> None:
-    """Push the refreshed token back to GitHub Secrets via the gh CLI."""
+    """通过 gh CLI 将刷新后的 token 回写到 GitHub Secret。"""
     repo = os.getenv("GITHUB_REPOSITORY", "").strip()
-    gh_token = os.getenv("GH_TOKEN", "").strip()  # Must be a PAT with secrets:write scope
+    gh_token = os.getenv("GH_TOKEN", "").strip()  # 必须是具有 repo 权限的 PAT
 
     if not repo or not gh_token:
-        # Auto-update not configured — caller handles output
+        # 未配置自动回写参数，由调用方自行处理 stdout 输出
         return
 
-    _err(f"Updating GOOGLE_TOKEN_JSON secret in {repo} ...")
+    _err(f"正在更新 {repo} 中的 GOOGLE_TOKEN_JSON Secret ...")
     env = {**os.environ, "GH_TOKEN": gh_token}
     try:
         subprocess.run(
@@ -97,13 +97,13 @@ def update_github_secret(token_json: str) -> None:
             text=True,
             check=True,
         )
-        _err("GOOGLE_TOKEN_JSON secret updated successfully.")
+        _err("GOOGLE_TOKEN_JSON Secret 更新成功。")
     except subprocess.CalledProcessError as exc:
-        _err(f"WARNING: Failed to update GitHub secret: {exc.stderr.strip()}")
-        _err("  Please update GOOGLE_TOKEN_JSON manually using the token printed to stdout.")
+        _err(f"警告：更新 GitHub Secret 失败：{exc.stderr.strip()}")
+        _err("  请使用 stdout 输出的 token 内容，手动更新 GOOGLE_TOKEN_JSON。")
     except FileNotFoundError:
-        _err("WARNING: 'gh' CLI not found; cannot update secret automatically.")
-        _err("  Please update GOOGLE_TOKEN_JSON manually using the token printed to stdout.")
+        _err("警告：未找到 gh CLI，无法自动更新 Secret。")
+        _err("  请使用 stdout 输出的 token 内容，手动更新 GOOGLE_TOKEN_JSON。")
 
 
 def main() -> None:
@@ -113,8 +113,8 @@ def main() -> None:
 
     update_github_secret(token_json)
 
-    # Always print the (possibly refreshed) token JSON to stdout so the caller
-    # can capture it for $GITHUB_ENV or manual copy-paste.
+    # 始终将当前最新 token JSON 输出到 stdout，方便调用方写入
+    # $GITHUB_ENV，或手动复制后更新到 GitHub Secret。
     print(token_json)
 
 
